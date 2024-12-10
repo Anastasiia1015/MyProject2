@@ -1,6 +1,3 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "GeneticPathFinder.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -9,586 +6,514 @@
 #include "UObject/NoExportTypes.h"
 #include "Math/Vector.h"
 #include "Math/RandomStream.h"
+#include "Algo/Unique.h"
+#include "Containers/Array.h"
 
+// Defines maximum population size and mutation rate
+#define POPULATION_SIZE 20
+#define MUTATION_RATE 0.05f
+#define MAX_GENERATIONS 1000
 
 // Sets default values
 AGeneticPathFinder::AGeneticPathFinder()
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
-	PrimaryActorTick.bCanEverTick = true;
-    
+    PrimaryActorTick.bCanEverTick = true;
 }
-const float AGeneticPathFinder::MutationRate = 0.01f;
-float AGeneticPathFinder::nbits = std::log10(NumPoints) / std::log10(2);
-int AGeneticPathFinder::ChromosomeLength = static_cast<int>(((nobs + 2) * nbits) / nbits);
 
 // Called when the game starts or when spawned
 void AGeneticPathFinder::BeginPlay()
 {
-	Super::BeginPlay();
+    Super::BeginPlay();
+    TArray<AActor*> StartActors;
+    TArray<AActor*> EndActors;
 
-	DefineLinks();
-    
+    // Find actors with tags "StartPoint" and "EndPoint"
+    UGameplayStatics::GetAllActorsWithTag(GetWorld(), "StartPoint", StartActors);
+    UGameplayStatics::GetAllActorsWithTag(GetWorld(), "EndPoint", EndActors);
+
+    StartActor = StartActors[0]; // Take the first actor (assuming only one "StartPoint")
+    EndActor = EndActors[0]; // Take the first actor (assuming only one "EndPoint")
+    DefineLinks();
+    StartGeneticAlgorithm();
 }
 
 // Called every frame
 void AGeneticPathFinder::Tick(float DeltaTime)
 {
-	Super::Tick(DeltaTime);
-
+    Super::Tick(DeltaTime);
 }
+
 void AGeneticPathFinder::DefineLinks()
 {
-    UE_LOG(LogTemp, Warning, TEXT("DefineLinks called!"));
+        UE_LOG(LogTemp, Warning, TEXT("DefineLinks called!"));
 
-    // Get all point nodes
-    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), PointNodes);
+        // Get all point nodes
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), PointNodes);
 
-    // Filter only BP_PointNode actors (assuming you've tagged them with "Point")
-    PointNodes = PointNodes.FilterByPredicate([](AActor* Actor)
-        {
-            return Actor->ActorHasTag("Point");
-        });
-    UE_LOG(LogTemp, Warning, TEXT("Found %d Point Nodes."), PointNodes.Num());
-
-    // Get all barriers
-    TArray<AActor*> Barriers;
-    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), Barriers);
-
-    // Filter for only the barriers
-    Barriers = Barriers.FilterByPredicate([](AActor* Actor)
-        {
-            return Actor->ActorHasTag("Barrier");
-        });
-    UE_LOG(LogTemp, Warning, TEXT("Found %d Barriers."), Barriers.Num());
-
-    // Find valid links
-    for (int32 i = 0; i < PointNodes.Num(); i++)
-    {
-        for (int32 j = i + 1; j < PointNodes.Num(); j++) // Avoid redundant checks
-        {
-            UE_LOG(LogTemp, Warning, TEXT("Checking link between %d and %d"), i, j);
-            FVector Start = PointNodes[i]->GetActorLocation();
-            FVector End = PointNodes[j]->GetActorLocation();
-
-            // Create a collision query parameters instance
-            FCollisionQueryParams CollisionParams;
-
-            // Add only the point nodes to the ignored actors list to avoid hitting them
-            TArray<AActor*> IgnoredActors = { PointNodes[i], PointNodes[j] };
-
-            // Add barriers to the collision query to ensure they can be hit by the trace
-            CollisionParams.AddIgnoredActors(IgnoredActors);
-
-            // Perform line trace between the points
-            FHitResult HitResult;
-            if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams))
+        // Filter only BP_PointNode actors (assuming you've tagged them with "Point")
+        PointNodes = PointNodes.FilterByPredicate([](AActor* Actor)
             {
-                // If we hit something, check if it's a barrier
-                if (AActor* HitActor = HitResult.GetActor())
+                return Actor->ActorHasTag("Point");
+            });
+        UE_LOG(LogTemp, Warning, TEXT("Found %d Point Nodes."), PointNodes.Num());
+
+        // Get all barriers
+        TArray<AActor*> Barriers;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), Barriers);
+
+        // Filter for only the barriers
+        Barriers = Barriers.FilterByPredicate([](AActor* Actor)
+            {
+                return Actor->ActorHasTag("Barrier");
+            });
+        UE_LOG(LogTemp, Warning, TEXT("Found %d Barriers."), Barriers.Num());
+
+        // Find valid links
+        for (int32 i = 0; i < PointNodes.Num(); i++)
+        {
+            for (int32 j = i + 1; j < PointNodes.Num(); j++) // Avoid redundant checks
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Checking link between %d and %d"), i, j);
+                FVector Start = PointNodes[i]->GetActorLocation();
+                FVector End = PointNodes[j]->GetActorLocation();
+
+                // Create a collision query parameters instance
+                FCollisionQueryParams CollisionParams;
+
+                // Add only the point nodes to the ignored actors list to avoid hitting them
+                TArray<AActor*> IgnoredActors = { PointNodes[i], PointNodes[j] };
+
+                // Add barriers to the collision query to ensure they can be hit by the trace
+                CollisionParams.AddIgnoredActors(IgnoredActors);
+
+                // Perform line trace between the points
+                FHitResult HitResult;
+                if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_Visibility, CollisionParams))
                 {
-                    if (HitActor->ActorHasTag("Barrier"))
+                    // If we hit something, check if it's a barrier
+                    if (AActor* HitActor = HitResult.GetActor())
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("Path is blocked by Barrier: %s"), *HitActor->GetName());
-                        continue; // Skip this link if blocked by a barrier
+                        if (HitActor->ActorHasTag("Barrier"))
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("Path is blocked by Barrier: %s"), *HitActor->GetName());
+                            continue; // Skip this link if blocked by a barrier
+                        }
                     }
                 }
-            }
 
-            // If no block was found, consider the link valid
-            UE_LOG(LogTemp, Warning, TEXT("Found valid Link between %d and %d"), i, j);
-            ValidLinks.FindOrAdd(i).Add(j);
-            ValidLinks.FindOrAdd(j).Add(i);
-
-            // Debug line for visualization
-            DrawDebugLine(GetWorld(), Start, End, FColor::Green, false, 10.0f);
-        }
-    }
-    for (const TPair<int32, TArray<int32>>& LinkPair : ValidLinks)
-    {
-        FString LinkList = FString::Printf(TEXT("Point %d is linked to: "), LinkPair.Key);
-
-        // Iterate over the array of linked points and append them to the string
-        for (int32 Link : LinkPair.Value)
-        {
-            LinkList += FString::Printf(TEXT("%d "), Link);
-        }
-
-        // Log the result
-        UE_LOG(LogTemp, Warning, TEXT("%s"), *LinkList);
-    }
-
-}
-
-TArray<TArray<int32>> AGeneticPathFinder::PerformGeneticOperations(
-    const TArray<float>& PopulationFitness,
-    const TArray<TArray<int32>>& RankedPopulation,
-    const TArray<int32>& BestFitnessIndices,
-    const TArray<TArray<int32>>& LastPopulation)
-{
-    TArray<TArray<int32>> CrossoverPopulation = PerformCrossover(RankedPopulation, BestFitnessIndices, LastPopulation);
-    TArray<TArray<int32>> MutatedPopulation = PerformMutation(CrossoverPopulation);
-    return MutatedPopulation;
-}
-
-// Crossover logic
-TArray<TArray<int32>> AGeneticPathFinder::PerformCrossover(
-    const TArray<TArray<int32>>& RankedPopulation,
-    const TArray<int32>& BestFitnessIndices,
-    const TArray<TArray<int32>>& LastPopulation)
-{
-    TArray<TArray<int32>> CrossoverPopulation;
-    CrossoverPopulation.SetNum(PopulationMax);
-
-    // Preserve the best chromosomes (elitism)
-    CrossoverPopulation[0] = LastPopulation[BestFitnessIndices[0]];
-    CrossoverPopulation[1] = LastPopulation[BestFitnessIndices[1]];
-    CrossoverPopulation[2] = LastPopulation[BestFitnessIndices[2]];
-
-    int32 Index = 3;
-
-    // Generate offspring using crossover
-    while (Index < PopulationMax / 5)
-    {
-        int32 ParentAIndex = FMath::RandRange(0, ChromosomeLength - 1);
-        int32 ParentBIndex = FMath::RandRange(0, ChromosomeLength - 1);
-
-        const TArray<int32>& ParentA = RankedPopulation[ParentAIndex];
-        const TArray<int32>& ParentB = RankedPopulation[ParentBIndex];
-
-        int32 JoiningPoint = FMath::RandRange(0, ChromosomeLength - 1);
-
-        TArray<int32> Offspring1, Offspring2;
-        Offspring1.SetNum(ChromosomeLength);
-        Offspring2.SetNum(ChromosomeLength);
-
-        // Combine segments
-        for (int32 i = 0; i < JoiningPoint; i++)
-        {
-            Offspring1[i] = ParentA[i];
-            Offspring2[i] = ParentB[i];
-        }
-        for (int32 i = JoiningPoint; i < ChromosomeLength; i++)
-        {
-            Offspring1[i] = ParentB[i];
-            Offspring2[i] = ParentA[i];
-        }
-
-        CrossoverPopulation[Index++] = Offspring1;
-        CrossoverPopulation[Index++] = Offspring2;
-    }
-
-    // Fill remaining with ranked population
-    while (Index < PopulationMax)
-    {
-        CrossoverPopulation[Index] = RankedPopulation[Index];
-        Index++;
-    }
-
-    return CrossoverPopulation;
-}
-
-// Mutation logic
-TArray<TArray<int32>> AGeneticPathFinder::PerformMutation(const TArray<TArray<int32>>& Population)
-{
-    TArray<TArray<int32>> MutatedPopulation = Population;
-
-    for (int32 i = 3; i < PopulationMax; i++) // Skip the elite chromosomes
-    {
-        for (int32 j = 0; j < ChromosomeLength; j++)
-        {
-            if (FMath::FRand() < MutationRate)
-            {
-                MutatedPopulation[i][j] = FMath::RandRange(1, NumPoints - 2); // Mutate within valid range
+                // If no block was found, consider the link valid
+                UE_LOG(LogTemp, Warning, TEXT("Found valid Link between %d and %d"), i, j);
+                ValidLinks.FindOrAdd(i).Add(j);
+                ValidLinks.FindOrAdd(j).Add(i);
+                // Debug line for visualization
+                //DrawDebugLine(GetWorld(), Start, End, FColor::Green, false, 10.0f);
             }
         }
-    }
-
-    return MutatedPopulation;
-}
-float AGeneticPathFinder::CalculateDistance(const FVector& Point1, const FVector& Point2)
-{
-    return FVector::Dist(Point1, Point2);
-}
-TArray<float> AGeneticPathFinder::CalculateConsecutiveDistances(const TArray<TArray<int32>>& Population)
-{
-    TArray<float> ConsecutiveDistances;
-
-    for (const TArray<int32>& Chromosome : Population)
-    {
-        float TotalDistance = 0.0f;
-
-        for (int i = 0; i < Chromosome.Num() - 1; i++)
-        {
-            FVector Point1 = PointNodes[Chromosome[i]]->GetActorLocation();
-            FVector Point2 = PointNodes[Chromosome[i + 1]]->GetActorLocation();
-            TotalDistance += CalculateDistance(Point1, Point2);
+        for (int i = 0; i < ValidLinks.Num(); i++) {
+            ValidLinks[i].Sort();
+            ValidLinks[i].SetNum(Algo::Unique(ValidLinks[i]));  // Remove duplicates
         }
-
-        ConsecutiveDistances.Add(TotalDistance);
-    }
-
-    return ConsecutiveDistances;
-}
-TArray<float> AGeneticPathFinder::CalculateFitnessBasedOnDistance(const TArray<float>& ConsecutiveDistances)
-{
-    TArray<float> FitnessBasedOnDistance;
-
-    for (float Distance : ConsecutiveDistances)
-    {
-        // We can scale the fitness to make it more significant (you can adjust this value)
-        FitnessBasedOnDistance.Add(10.0f * (1.0f / Distance));
-    }
-
-    return FitnessBasedOnDistance;
-}
-
-TArray<int32> AGeneticPathFinder::CalculateConnections(const TArray<TArray<int32>>& Population)
-{
-    TArray<int32> Connections;
-
-    for (const TArray<int32>& Chromosome : Population)
-    {
-        int32 ConnectionCount = 0;
-
-        for (int i = 0; i < Chromosome.Num() - 1; i++)
+        for (const TPair<int32, TArray<int32>>& LinkPair : ValidLinks)
         {
-            int32 A = Chromosome[i];
-            int32 B = Chromosome[i + 1];
+            FString LinkList = FString::Printf(TEXT("Point %d is linked to: "), LinkPair.Key);
 
-            if (ValidLinks.Contains(A) && ValidLinks[A].Contains(B))
+            // Iterate over the array of linked points and append them to the string
+            for (int32 Link : LinkPair.Value)
             {
-                ConnectionCount++;
+                LinkList += FString::Printf(TEXT("%d "), Link);
             }
+
+            // Log the result
+            UE_LOG(LogTemp, Warning, TEXT("%s"), *LinkList);
         }
 
-        Connections.Add(ConnectionCount);
+}
+
+// Fitness Function: Determines how good a path is
+float AGeneticPathFinder::CalculateFitness(const FPath& Path)
+{
+    if (Path.PathPoints.Num() < 2)
+        return 0.0f;
+
+    // Get Start and End points
+   
+    //if (StartActors.Num() == 0 || EndActors.Num() == 0)
+    //{
+    //    UE_LOG(LogTemp, Warning, TEXT("StartPoint or EndPoint actors not found!"));
+    //    return 0.0f; // Return a default value or handle the error as appropriate
+    //}
+
+    FVector StartLocation = StartActor->GetActorLocation();
+    FVector EndLocation = EndActor->GetActorLocation();
+
+    // Calculate path length and deviation from goal
+    float PathLength = 0.0f;
+    for (int i = 0; i < Path.PathPoints.Num() - 1; ++i)
+    {
+        FVector Current = PointNodes[Path.PathPoints[i]]->GetActorLocation();
+        FVector Next = PointNodes[Path.PathPoints[i + 1]]->GetActorLocation();
+        PathLength += FVector::Dist(Current, Next);
     }
 
-    return Connections;
-}
-TArray<float> AGeneticPathFinder::CalculateFitnessBasedOnConnections(const TArray<int32>& Connections)
-{
-    TArray<float> FitnessBasedOnConnections;
+    // Calculate the distance from the end point
+    FVector LastPoint = PointNodes[Path.PathPoints.Last()]->GetActorLocation();
+    float DistanceToEnd = FVector::Dist(LastPoint, EndLocation);
 
-    for (int32 ConnectionCount : Connections)
+    // Fitness: shorter path length and closer to the goal
+    return 1.0f / (PathLength + DistanceToEnd);  // Inversely proportional to path length + distance to goal
+}
+
+// Create a random path
+FPath AGeneticPathFinder::GenerateRandomPath()
+{
+    FPath NewPath;
+    
+    // Randomly select points (avoid the start and end points)
+    int32 StartIndex = PointNodes.IndexOfByKey(StartActor);
+    int32 EndIndex = PointNodes.IndexOfByKey(EndActor);
+
+    
+    if (StartIndex == INDEX_NONE || EndIndex == INDEX_NONE)
     {
-        // Normalize the fitness based on the number of connections
-        FitnessBasedOnConnections.Add(static_cast<float>(ConnectionCount) / (ChromosomeLength - 1));
+        UE_LOG(LogTemp, Error, TEXT("Start or End actor not found in PointNodes! StartIndex: %d, EndIndex: %d"), StartIndex, EndIndex);
+        return NewPath;  // Handle the error (possibly exit early)
     }
 
-    return FitnessBasedOnConnections;
-}
-TArray<float> AGeneticPathFinder::CalculateFinalFitness(const TArray<float>& FitnessBasedOnDistance, const TArray<float>& FitnessBasedOnConnections)
-{
-    TArray<float> FinalFitness;
+    UE_LOG(LogTemp, Warning, TEXT("Generating path from Start Index: %d to End Index: %d"), StartIndex, EndIndex);
 
-    for (int32 i = 0; i < FitnessBasedOnDistance.Num(); i++)
+    int32 CurrentIndex = StartIndex;
+    TSet<int32> VisitedPoints; // Track points that have already been added to the path
+    VisitedPoints.Add(StartIndex);
+    NewPath.PathPoints.Add(StartIndex);
+    while (CurrentIndex != EndIndex)
     {
-        FinalFitness.Add(FitnessBasedOnDistance[i] + FitnessBasedOnConnections[i]);
-    }
+        TArray<int32>& Links = ValidLinks.FindChecked(CurrentIndex);
 
-    return FinalFitness;
-}
-TArray<int32> AGeneticPathFinder::GetBestFitnessIndices(const TArray<float>& FitnessValues)
-{
-    TArray<int32> BestFitnessIndices;
-
-    // Copy the fitness values to avoid modifying the original array
-    TArray<float> TempFitnessValues = FitnessValues;
-
-    while (BestFitnessIndices.Num() < 3)
-    {
-        // Find the index of the maximum fitness value
-        int32 MaxIndex = TempFitnessValues.IndexOfByPredicate([&](float Value) { return Value == FMath::Max<float>(TempFitnessValues); });
-
-        BestFitnessIndices.Add(MaxIndex);
-        TempFitnessValues[MaxIndex] = 0; // Prevent selecting the same individual twice
-    }
-
-    return BestFitnessIndices;
-}
-TArray<float> AGeneticPathFinder::EvaluateFitness(const TArray<TArray<int32>>& Population)
-{
-    // Step 1: Calculate distances between consecutive points
-    TArray<float> ConsecutiveDistances = CalculateConsecutiveDistances(Population);
-
-    // Step 2: Calculate fitness based on total distance
-    TArray<float> FitnessBasedOnDistance = CalculateFitnessBasedOnDistance(ConsecutiveDistances);
-
-    // Step 3: Calculate the number of valid connections
-    TArray<int32> Connections = CalculateConnections(Population);
-
-    // Step 4: Calculate fitness based on the number of valid connections
-    TArray<float> FitnessBasedOnConnections = CalculateFitnessBasedOnConnections(Connections);
-
-    // Step 5: Combine the two fitness components
-    TArray<float> FinalFitness = CalculateFinalFitness(FitnessBasedOnDistance, FitnessBasedOnConnections);
-
-    // Step 6: Get the best fitness indices
-    TArray<int32> BestFitnessIndices = GetBestFitnessIndices(FinalFitness);
-
-    // Return the final fitness values and the best indices
-    return FinalFitness;
-}
-
-TArray<TArray<int32>> AGeneticPathFinder::InitializePopulation()
-{
-    TArray<TArray<int32>> Population;
-
-    // Call DefineLinks, but don't expect it to return anything
-    DefineLinks();
-
-    // Now use ValidLinks directly, since it's populated by DefineLinks
-    TArray<float> LinkFitness = CalculateLinkDistance(ValidLinks);
-    TArray<float> LinkProbability = CalculateLinkProbability(LinkFitness);
-
-    // Calculate cumulative probability
-    TArray<TArray<float>> CumulativeLinkProbability;
-    CalculateCumulativeProbability(LinkProbability, CumulativeLinkProbability);
-
-    // Create the population based on the cumulative probability
-    CreatePopulation(CumulativeLinkProbability, Population);
-
-    return Population;
-}
-
-TArray<float> AGeneticPathFinder::CalculateLinkDistance(const TMap<int32, TArray<int32>>& Links)
-{
-    TArray<float> LinkDistances;
-
-    // Iterate over each entry in the ValidLinks TMap
-    for (const TPair<int32, TArray<int32>>& LinkPair : Links)
-    {
-        int32 PointIndex = LinkPair.Key;
-        const TArray<int32>& LinkedPoints = LinkPair.Value;
-
-        // Now for each linked point in this TArray, calculate the distance
-        for (int32 LinkedPoint : LinkedPoints)
+        if (Links.Num() == 0)
         {
-            // Make sure we are not comparing the same point to itself
-            if (PointIndex != LinkedPoint)
+            UE_LOG(LogTemp, Warning, TEXT("No valid links found for point %d!"), CurrentIndex);
+            break;
+        }
+
+        // Filter out already visited points
+        TArray<int32> UnvisitedLinks = Links.FilterByPredicate([&](int32 Point) {
+            return !VisitedPoints.Contains(Point);
+            });
+
+        if (UnvisitedLinks.Num() == 0)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("No unvisited links available for point %d! Terminating."), CurrentIndex);
+            break;
+        }
+
+        // Randomly select the next point from unvisited links
+        int32 NextIndex = UnvisitedLinks[FMath::RandRange(0, UnvisitedLinks.Num() - 1)];
+
+        NewPath.PathPoints.Add(NextIndex);
+        VisitedPoints.Add(NextIndex); // Mark the point as visited
+        
+        UE_LOG(LogTemp, Warning, TEXT("Added Point %d to Path"), NextIndex);
+
+        CurrentIndex = NextIndex; // Move to the next point
+    }
+    UE_LOG(LogTemp, Warning, TEXT("new generated path from generator:"));
+    LogPath(NewPath);
+    return NewPath;
+}
+
+
+
+// Select two paths for crossover
+void AGeneticPathFinder::SelectParents(FPath& Parent1, FPath& Parent2)
+{
+    int32 Parent1Index = FMath::RandRange(0, Population.Num() - 1);
+    int32 Parent2Index = FMath::RandRange(0, Population.Num() - 1);
+
+    Parent1 = Population[Parent1Index];
+    Parent2 = Population[Parent2Index];
+}
+
+// Crossover function
+FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
+{
+    FPath Child;
+
+    // Ensure both parents have valid paths
+    if (Parent1.PathPoints.Num() == 0 || Parent2.PathPoints.Num() == 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("One of the parents has an empty path!"));
+        return Child;  // Return empty path if either parent is invalid
+    }
+
+    // Ensure the crossover point is within bounds for both parents
+    int32 CrossoverPoint = FMath::RandRange(0, FMath::Min(Parent1.PathPoints.Num(), Parent2.PathPoints.Num()) - 1);
+
+    // Take the first part from Parent1
+    Child.PathPoints.Append(Parent1.PathPoints.GetData(), CrossoverPoint);
+
+    // Take the second part from Parent2
+    Child.PathPoints.Append(Parent2.PathPoints.GetData() + CrossoverPoint, Parent2.PathPoints.Num() - CrossoverPoint);
+
+    // Optionally, enforce valid links in the child path
+    for (int32 i = 0; i < Child.PathPoints.Num() - 1; i++)
+    {
+        int32 StartPoint = Child.PathPoints[i];
+        int32 EndPoint = Child.PathPoints[i + 1];
+
+        // Ensure that the link between points is valid
+        if (!IsValidLink(StartPoint, EndPoint))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Invalid link detected between %d and %d, fixing..."), StartPoint, EndPoint);
+            // Fix the invalid link by choosing a valid link
+            const TArray<int32>* ValidStartLinks = ValidLinks.Find(StartPoint);
+            if (ValidStartLinks && ValidStartLinks->Num() > 0)
             {
-                // Get the locations of the points
-                FVector Point1 = PointNodes[PointIndex]->GetActorLocation();
-                FVector Point2 = PointNodes[LinkedPoint]->GetActorLocation();
-
-                // Calculate the distance between the points
-                float Distance = FVector::Dist(Point1, Point2);
-
-                // Add the distance to the result array
-                LinkDistances.Add(Distance);
+                // Pick a valid link
+                EndPoint = (*ValidStartLinks)[FMath::RandRange(0, ValidStartLinks->Num() - 1)];
+                Child.PathPoints[i + 1] = EndPoint;  // Update the path
             }
         }
     }
 
-    return LinkDistances;
+    // Explicitly set the start and end points for the child path
+    if (Child.PathPoints.Num() > 0)
+    {
+        Child.PathPoints[0] = Parent1.PathPoints[0];  // Ensure the start point is from Parent1
+        Child.PathPoints[Child.PathPoints.Num() - 1] = Parent2.PathPoints[Parent2.PathPoints.Num() - 1];  // Ensure the end point is from Parent2
+    }
+
+    // Optionally, handle the case where the child path is incomplete or invalid
+    if (Child.PathPoints.Num() == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Child path is empty after crossover!"));
+    }
+
+    return Child;
 }
 
-TArray<float> AGeneticPathFinder::CalculateLinkProbability(const TArray<float>& LinkFitness)
+
+
+
+// Mutation function: Randomly change part of the path
+void AGeneticPathFinder::Mutate(FPath& Path)
 {
-    TArray<float> LinkProbability;
-    float Sum = 0.0f;
+    UE_LOG(LogTemp, Warning, TEXT("Mutation started"));
+    float RandValue = FMath::FRand();
+    UE_LOG(LogTemp, Warning, TEXT("Random Value: %f"), RandValue);
 
-    // Calculate total fitness
-    for (float Fitness : LinkFitness)
+    if (RandValue < MUTATION_RATE)
     {
-        Sum += Fitness;
-    }
-
-    // Calculate probability for each link
-    for (float Fitness : LinkFitness)
-    {
-        LinkProbability.Add(Fitness / Sum);
-    }
-
-    return LinkProbability;
-}
-
-void AGeneticPathFinder::CalculateCumulativeProbability(const TArray<float>& LinkProbability, TArray<TArray<float>>& CumulativeProbability)
-{
-    TArray<float> CumProb;
-    float CumulativeSum = 0.0f;
-
-    for (float Probability : LinkProbability)
-    {
-        CumulativeSum += Probability;
-        CumProb.Add(CumulativeSum);
-    }
-    CumulativeProbability.Add(CumProb);
-}
-void AGeneticPathFinder::CreatePopulation(const TArray<TArray<float>>& LinkCumProbability, TArray<TArray<int32>>& Population)
-{
-    Population.SetNum(PopulationMax);
-
-    // Find StartPoint and EndPoint indices from tags
-    int32 StartIndex = -1;
-    int32 EndIndex = -1;
-
-    // Find the StartPoint and EndPoint actors and get their indices
-    for (int32 i = 0; i < PointNodes.Num(); i++)
-    {
-        if (PointNodes[i]->ActorHasTag("StartPoint"))
+        // Ensure there are points to mutate (avoid the start and end points)
+        if (Path.PathPoints.Num() <= 2)  // At least 2 points (start and end)
         {
-            StartIndex = i;
-        }
-        if (PointNodes[i]->ActorHasTag("EndPoint"))
-        {
-            EndIndex = i;
-        }
-    }
-
-    // Ensure valid StartIndex and EndIndex
-    if (StartIndex == -1 || EndIndex == -1)
-    {
-        UE_LOG(LogTemp, Error, TEXT("StartPoint or EndPoint not found!"));
-        return;
-    }
-
-    // Create the population using the ValidLinks
-    for (int32 k = 0; k < PopulationMax; k++)
-    {
-        TArray<int32> Chromosome;
-        Chromosome.SetNum(ChromosomeLength);
-
-        int32 i = StartIndex;
-        int32 j = StartIndex + 1;
-
-        // Initialize the first point in the chromosome
-        Chromosome[0] = StartIndex;
-
-        while (j < ChromosomeLength)
-        {
-            // Select the next point based on the valid links
-            if (ValidLinks.Contains(i))
-            {
-                const TArray<int32>& LinkedPoints = ValidLinks[i];
-                if (LinkedPoints.Num() > 0)
-                {
-                    // Randomly select a linked point (to simulate crossover/mutation)
-                    int32 RandomIndex = FMath::RandRange(0, LinkedPoints.Num() - 1);
-                    int32 NextPoint = LinkedPoints[RandomIndex];
-
-                    Chromosome[j] = NextPoint;
-
-                    // Move to the next point
-                    i = NextPoint;
-                }
-            }
-
-            // Check if we have reached the end point
-            if (i == EndIndex)
-            {
-                // If we reached the end, set the remaining points in the chromosome to EndIndex
-                while (j < ChromosomeLength)
-                {
-                    Chromosome[j] = EndIndex;
-                    j++;
-                }
-                break;
-            }
-
-            j++;
+            UE_LOG(LogTemp, Warning, TEXT("Mutation aborted: Path has too few points."));
+            return;
         }
 
-        Population[k] = Chromosome;
-    }
-}
-TArray<float> AGeneticPathFinder::CalculateProbabilities(const TArray<float>& Fitness)
-{
-    TArray<float> Probabilities;
-    float Sum = 0.0f;
+        UE_LOG(LogTemp, Warning, TEXT("Mutation started 2.0"));
 
-    // Calculate total fitness sum
-    for (float Value : Fitness)
-    {
-        Sum += Value;
-    }
+        // Select a random mutation point (excluding start and end points)
+        int32 MutationPoint = FMath::RandRange(1, Path.PathPoints.Num() - 2);  // Skip start (0) and end (Num()-1)
+        UE_LOG(LogTemp, Warning, TEXT("MutationPoint selected: %d"), MutationPoint);
 
-    // Calculate the probability for each chromosome based on fitness
-    for (float Value : Fitness)
-    {
-        Probabilities.Add(Value / Sum);
-    }
+        int32 MutationIndex = Path.PathPoints[MutationPoint];
+        UE_LOG(LogTemp, Warning, TEXT("MutationIndex selected: %d"), MutationIndex);
 
-    return Probabilities;
-}
-TArray<int32> AGeneticPathFinder::RankingBasedOnRouletteWheelSelection(const TArray<float>& CumulativeProbabilities)
-{
-    TArray<int32> Rank;
-    TArray<float> RandomNumbers;
-
-    // Generate random numbers for roulette wheel selection
-    for (int32 i = 0; i < PopulationMax; i++)
-    {
-        RandomNumbers.Add(FMath::FRand());
-    }
-
-    TArray<int32> SelectedChromosomes;
-    for (float RandomNumber : RandomNumbers)
-    {
-        for (int32 i = 0; i < PopulationMax; i++)
+        // Ensure valid links exist for the mutation index
+        const TArray<int32>* Links = ValidLinks.Find(MutationIndex);
+        if (Links == nullptr || Links->Num() == 0)
         {
-            if (RandomNumber <= CumulativeProbabilities[i])
+            UE_LOG(LogTemp, Warning, TEXT("Mutation point %d has no valid links or links array is empty!"), MutationIndex);
+            return;
+        }
+
+        // Find a valid link for mutation
+        bool bValidLinkFound = false;
+        int32 NewPoint = -1;
+
+        for (int32 i = 0; i < Links->Num(); i++)
+        {
+            int32 CandidatePoint = (*Links)[i];
+            // Ensure that this link is valid
+            if (IsValidLink(MutationIndex, CandidatePoint))
             {
-                SelectedChromosomes.Add(i);
+                NewPoint = CandidatePoint;
+                bValidLinkFound = true;
                 break;
             }
         }
+
+        if (!bValidLinkFound)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("No valid links found for mutation point %d!"), MutationIndex);
+            return;
+        }
+
+        // Apply the mutation
+        Path.PathPoints[MutationPoint] = NewPoint;
+        UE_LOG(LogTemp, Warning, TEXT("Mutated Path at Point %d to %d"), MutationPoint, NewPoint);
     }
-
-    // Now count how many times each chromosome is selected and rank them
-    TArray<int32> RankCounts;
-    RankCounts.SetNumZeroed(PopulationMax);
-
-    for (int32 ChromosomeIndex : SelectedChromosomes)
-    {
-        RankCounts[ChromosomeIndex]++;
-    }
-
-    // Assign ranks based on the selection count
-    for (int32 i = 0; i < RankCounts.Num(); i++)
-    {
-        Rank.Add(RankCounts[i]);
-    }
-
-    return Rank;
 }
-TArray<TArray<int32>> AGeneticPathFinder::GenerateMatingPool(const TArray<int32>& Rank, const TArray<TArray<int32>>& Population)
+
+
+
+
+// The main Genetic Algorithm
+void AGeneticPathFinder::StartGeneticAlgorithm()
 {
-    TArray<TArray<int32>> MatingPool;
+    int StagnationCount = 0;  // Counter for generations without improvement
+    const int MaxStagnationCount = 50;  // Number of generations with no improvement to allow before stopping
 
-    // Generate mating pool based on the chromosome ranks
-    for (int32 i = 0; i < PopulationMax; i++)
+    // Initialize population with random paths
+    for (int i = 0; i < POPULATION_SIZE; i++)
     {
-        int32 RankIndex = Rank[i];
-        MatingPool.Add(Population[RankIndex]);
+        FPath newPath = GenerateRandomPath();
+        UE_LOG(LogTemp, Warning, TEXT("new generated path:"));
+        LogPath(newPath);
+        Population.Add(newPath);
     }
 
-    return MatingPool;
+    // Evolve population over generations
+    for (int Gen = 0; Gen < MAX_GENERATIONS; Gen++)
+    {
+        // Calculate fitness for each individual
+        for (FPath& Path : Population)
+        {
+            Path.Fitness = CalculateFitness(Path);
+            UE_LOG(LogTemp, Warning, TEXT("CalculateFitness called"));
+        }
+
+        // Sort the population by fitness (best first)
+        Population.Sort([](const FPath& A, const FPath& B) { return A.Fitness > B.Fitness; });
+
+        // Track fitness changes
+        static float PreviousBestFitness = 0.0f;
+        float CurrentBestFitness = Population[0].Fitness;
+
+        if (CurrentBestFitness == PreviousBestFitness)
+        {
+            StagnationCount++;  // Increment stagnation count if the fitness hasn't improved
+        }
+        else
+        {
+            StagnationCount = 0;  // Reset stagnation count if there's an improvement
+        }
+
+        // If the best fitness hasn't improved for a set number of generations, stop
+        if (StagnationCount >= MaxStagnationCount)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Stopping due to stagnation (no improvement in best fitness for %d generations)."), MaxStagnationCount);
+            LogPath(Population[0]);
+            VisualizePath(Population[0]);
+            break;
+        }
+
+        // Store the best fitness for the next generation check
+        PreviousBestFitness = CurrentBestFitness;
+
+        // Generate next generation
+        TArray<FPath> NewGeneration;
+        UE_LOG(LogTemp, Warning, TEXT("NewGeneration created"));
+        UE_LOG(LogTemp, Warning, TEXT("population[0]:"));
+        LogPath(Population[0]);
+        UE_LOG(LogTemp, Warning, TEXT("population[1]:"));
+        LogPath(Population[1]);
+
+        // Elitism: Keep the top 2 paths
+        NewGeneration.Add(Population[0]);
+        UE_LOG(LogTemp, Warning, TEXT("NewGeneration.Add(Population[0]);"));
+        NewGeneration.Add(Population[1]);
+        UE_LOG(LogTemp, Warning, TEXT("NewGeneration.Add(Population[1]);"));
+
+        // Create new paths by crossover and mutation
+        while (NewGeneration.Num() < POPULATION_SIZE)
+        {
+            FPath Parent1, Parent2;
+            UE_LOG(LogTemp, Warning, TEXT("Before SelectParents"));
+            SelectParents(Parent1, Parent2);
+            UE_LOG(LogTemp, Warning, TEXT("Before crossover"));
+            FPath Child = Crossover(Parent1, Parent2);
+            UE_LOG(LogTemp, Warning, TEXT("Child after crossover:"));
+            LogPath(Child);
+            UE_LOG(LogTemp, Warning, TEXT("Before child mutated:"));
+            Mutate(Child);
+            UE_LOG(LogTemp, Warning, TEXT("Child after mutation:"));
+            LogPath(Child);
+
+            NewGeneration.Add(Child);
+            UE_LOG(LogTemp, Warning, TEXT("NewGeneration.Add(Child);"));
+        }
+
+        // Replace the old population with the new one
+        UE_LOG(LogTemp, Warning, TEXT("before new gen"));
+        Population = NewGeneration;
+        UE_LOG(LogTemp, Warning, TEXT("after new gen"));
+        UE_LOG(LogTemp, Warning, TEXT("Generation %d: Best Fitness = %f"), Gen, Population[0].Fitness);
+    }
 }
 
-TArray<TArray<int32>> AGeneticPathFinder::Ranking(const TArray<float>& Fitness, const TArray<TArray<int32>>& Population)
+void AGeneticPathFinder::VisualizePath(const FPath& Path)
 {
-    // Step 1: Calculate probabilities for each chromosome
-    TArray<float> Probabilities = CalculateProbabilities(Fitness);
-
-    // Step 2: Calculate cumulative probability
-    TArray<float> CumulativeProbabilities;
-    float CumSum = 0.0f;
-    for (float Prob : Probabilities)
+    if (Path.PathPoints.Num() < 2)
     {
-        CumSum += Prob;
-        CumulativeProbabilities.Add(CumSum);
+        return; // No valid path to visualize
     }
 
-    // Step 3: Perform ranking based on roulette wheel selection
-    TArray<int32> Rank = RankingBasedOnRouletteWheelSelection(CumulativeProbabilities);
+    // Iterate through the path points and draw debug lines
+    for (int32 i = 0; i < Path.PathPoints.Num() - 1; i++)
+    {
+        // Get the actor from PointNodes using Path.PathPoints[i], which is an index
+        TObjectPtr<AActor> ActorStartPtr = PointNodes[Path.PathPoints[i]];
+        TObjectPtr<AActor> ActorEndPtr = PointNodes[Path.PathPoints[i + 1]];
 
-    // Step 4: Generate the mating pool
-    TArray<TArray<int32>> MatingPool = GenerateMatingPool(Rank, Population);
+        // Check if the actors are valid by checking if the pointers are non-null
+        if (ActorStartPtr && ActorEndPtr)
+        {
+            // Dereference the TObjectPtr to get the raw AActor pointer
+            AActor* ActorStart = ActorStartPtr.Get();
+            AActor* ActorEnd = ActorEndPtr.Get();
 
-    return MatingPool;
+            if (ActorStart && ActorEnd)
+            {
+                FVector Start = ActorStart->GetActorLocation();
+                FVector End = ActorEnd->GetActorLocation();
+
+                // Draw a line between the points
+                DrawDebugLine(GetWorld(), Start, End, FColor::Green, false, 10.0f, 0, 1);
+            }
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Invalid actor at path points %d and %d"), i, i + 1);
+        }
+    }
 }
+void AGeneticPathFinder::LogPath(const FPath& Path)
+{
+    FString PathString = TEXT("");
 
+    // Iterate through the points in the path and log them
+    for (int32 i = 0; i < Path.PathPoints.Num(); i++)
+    {
+        PathString += FString::Printf(TEXT("%d"), Path.PathPoints[i]);
 
+        if (i < Path.PathPoints.Num() - 1)
+        {
+            PathString += TEXT(" -> ");
+        }
+    }
+
+    // Log the path to the output
+    UE_LOG(LogTemp, Warning, TEXT("%s"), *PathString);
+}
+bool AGeneticPathFinder::IsValidLink(int32 StartPoint, int32 EndPoint)
+{
+    // Check if there is a valid link between the points
+    const TArray<int32>* ValidLinksForStart = ValidLinks.Find(StartPoint);
+    if (ValidLinksForStart && ValidLinksForStart->Contains(EndPoint))
+    {
+        return true;  // Link is valid
+    }
+
+    return false;  // Link is invalid
+}
