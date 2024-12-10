@@ -254,7 +254,7 @@ FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
     // Take the second part from Parent2
     Child.PathPoints.Append(Parent2.PathPoints.GetData() + CrossoverPoint, Parent2.PathPoints.Num() - CrossoverPoint);
 
-    // Optionally, enforce valid links in the child path
+    // Ensure valid links in the child path (after crossover)
     for (int32 i = 0; i < Child.PathPoints.Num() - 1; i++)
     {
         int32 StartPoint = Child.PathPoints[i];
@@ -290,6 +290,7 @@ FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
 
     return Child;
 }
+
 
 
 
@@ -331,11 +332,16 @@ void AGeneticPathFinder::Mutate(FPath& Path)
         bool bValidLinkFound = false;
         int32 NewPoint = -1;
 
+        // Try mutating the point to a new valid link
         for (int32 i = 0; i < Links->Num(); i++)
         {
             int32 CandidatePoint = (*Links)[i];
-            // Ensure that this link is valid
-            if (IsValidLink(MutationIndex, CandidatePoint))
+
+            // Ensure the mutated point has valid links to both its neighbors
+            int32 PreviousPoint = Path.PathPoints[MutationPoint - 1];
+            int32 NextPoint = Path.PathPoints[MutationPoint + 1];
+
+            if (IsValidLink(PreviousPoint, CandidatePoint) && IsValidLink(CandidatePoint, NextPoint))
             {
                 NewPoint = CandidatePoint;
                 bValidLinkFound = true;
@@ -357,12 +363,11 @@ void AGeneticPathFinder::Mutate(FPath& Path)
 
 
 
-
 // The main Genetic Algorithm
 void AGeneticPathFinder::StartGeneticAlgorithm()
 {
     int StagnationCount = 0;  // Counter for generations without improvement
-    const int MaxStagnationCount = 50;  // Number of generations with no improvement to allow before stopping
+    const int MaxStagnationCount = 20;  // Number of generations with no improvement to allow before stopping
 
     // Initialize population with random paths
     for (int i = 0; i < POPULATION_SIZE; i++)
