@@ -246,29 +246,43 @@ FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
     }
 
     // Ensure the crossover point is within bounds for both parents
-    int32 CrossoverPoint = FMath::RandRange(0, FMath::Min(Parent1.PathPoints.Num(), Parent2.PathPoints.Num()) - 1);
+    int32 CrossoverPoint = FMath::RandRange(1, FMath::Min(Parent1.PathPoints.Num(), Parent2.PathPoints.Num()) - 2); // Avoid endpoints
 
     // Take the first part from Parent1
     Child.PathPoints.Append(Parent1.PathPoints.GetData(), CrossoverPoint);
 
-    // Take the second part from Parent2
-    Child.PathPoints.Append(Parent2.PathPoints.GetData() + CrossoverPoint, Parent2.PathPoints.Num() - CrossoverPoint);
+    // Validate transition from Parent1's last point to Parent2's first point (at crossover)
+    int32 TransitionStart = Child.PathPoints.Last();
+    int32 TransitionEnd = Parent2.PathPoints[CrossoverPoint];
 
-    // Ensure valid links in the child path (after crossover)
+    if (!IsValidLink(TransitionStart, TransitionEnd))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Invalid transition detected between %d and %d at crossover, fixing..."), TransitionStart, TransitionEnd);
+        const TArray<int32>* ValidStartLinks = ValidLinks.Find(TransitionStart);
+        if (ValidStartLinks && ValidStartLinks->Num() > 0)
+        {
+            // Replace the first point of Parent2's segment with a valid link
+            TransitionEnd = (*ValidStartLinks)[FMath::RandRange(0, ValidStartLinks->Num() - 1)];
+        }
+    }
+
+    // Append the (adjusted) second part from Parent2
+    Child.PathPoints.Add(TransitionEnd);
+    Child.PathPoints.Append(Parent2.PathPoints.GetData() + CrossoverPoint + 1, Parent2.PathPoints.Num() - CrossoverPoint - 1);
+
+    // Validate the entire child path to ensure all links are valid
     for (int32 i = 0; i < Child.PathPoints.Num() - 1; i++)
     {
         int32 StartPoint = Child.PathPoints[i];
         int32 EndPoint = Child.PathPoints[i + 1];
 
-        // Ensure that the link between points is valid
         if (!IsValidLink(StartPoint, EndPoint))
         {
             UE_LOG(LogTemp, Warning, TEXT("Invalid link detected between %d and %d, fixing..."), StartPoint, EndPoint);
-            // Fix the invalid link by choosing a valid link
             const TArray<int32>* ValidStartLinks = ValidLinks.Find(StartPoint);
             if (ValidStartLinks && ValidStartLinks->Num() > 0)
             {
-                // Pick a valid link
+                // Replace with a valid link
                 EndPoint = (*ValidStartLinks)[FMath::RandRange(0, ValidStartLinks->Num() - 1)];
                 Child.PathPoints[i + 1] = EndPoint;  // Update the path
             }
@@ -279,7 +293,7 @@ FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
     if (Child.PathPoints.Num() > 0)
     {
         Child.PathPoints[0] = Parent1.PathPoints[0];  // Ensure the start point is from Parent1
-        Child.PathPoints[Child.PathPoints.Num() - 1] = Parent2.PathPoints[Parent2.PathPoints.Num() - 1];  // Ensure the end point is from Parent2
+        Child.PathPoints[Child.PathPoints.Num() - 1] = Parent2.PathPoints.Last();  // Ensure the end point is from Parent2
     }
 
     // Optionally, handle the case where the child path is incomplete or invalid
@@ -290,6 +304,7 @@ FPath AGeneticPathFinder::Crossover(const FPath& Parent1, const FPath& Parent2)
 
     return Child;
 }
+
 
 
 
